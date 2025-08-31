@@ -1,103 +1,134 @@
-import Image from "next/image";
+"use client";
+import { useRef, useState } from "react";
 
-export default function Home() {
+type Msg = { role: "user" | "assistant" | "system"; content: string };
+
+function stripHtml(s: string) {
+  if (/<\/?[a-z][\s\S]*>/i.test(s)) return "An error occurred (HTML response). Check server logs.";
+  return s;
+}
+
+export default function Chat() {
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  async function send() {
+    const text = input.trim();
+    if (!text || loading) return;
+
+    const nextHistory = [...messages, { role: "user", content: text } as Msg];
+    setMessages(nextHistory);
+    setInput("");
+    setLoading(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    let res: Response;
+    try {
+      res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: nextHistory }),
+        signal: controller.signal,
+      });
+    } catch (e: any) {
+      setMessages([...nextHistory, { role: "system", content: `Network error: ${e.message}` }]);
+      setLoading(false);
+      abortRef.current = null;
+      return;
+    }
+
+    const ct = res.headers.get("content-type") || "";
+    if (!res.ok || ct.includes("text/html")) {
+      const txt = await res.text();
+      const msg =
+        res.status === 429
+          ? "Rate limit / quota exceeded. Add billing or enable mock mode."
+          : stripHtml(txt) || `HTTP ${res.status}`;
+      setMessages([...nextHistory, { role: "system", content: msg }]);
+      setLoading(false);
+      abortRef.current = null;
+      return;
+    }
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let acc = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      acc += decoder.decode(value, { stream: true });
+      setMessages([...nextHistory, { role: "assistant", content: acc }]);
+    }
+
+    setLoading(false);
+    abortRef.current = null;
+  }
+
+  function stop() {
+    abortRef.current?.abort();
+    setLoading(false);
+  }
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <main className="min-h-screen bg-neutral-950 text-neutral-100">
+      <div className="mx-auto max-w-3xl p-4 flex flex-col h-screen">
+        <h1 className="text-xl md:text-2xl font-semibold mb-4">Interview AI — Chat MVP</h1>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+        <div className="flex-1 overflow-y-auto space-y-3 border border-neutral-800 rounded-2xl p-4 bg-neutral-900">
+          {messages.map((m, i) => {
+            const isUser = m.role === "user";
+            const isSystem = m.role === "system";
+            const bubble =
+              "max-w-[80%] rounded-2xl px-4 py-2 whitespace-pre-wrap break-words break-all leading-relaxed";
+            return (
+              <div key={i} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={
+                    isSystem
+                      ? `${bubble} bg-amber-900/30 text-amber-200 border border-amber-700/40`
+                      : isUser
+                      ? `${bubble} bg-blue-600 text-white`
+                      : `${bubble} bg-neutral-800 text-neutral-100`
+                  }
+                >
+                  {!isUser && !isSystem && <div className="text-xs text-green-400 mb-1">Assistant</div>}
+                  {isUser && <div className="text-xs text-blue-200/80 mb-1">You</div>}
+                  {m.content}
+                </div>
+              </div>
+            );
+          })}
+          {loading && <div className="text-green-400 text-sm animate-pulse">Assistant is typing…</div>}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+
+        <div className="mt-4 flex gap-2">
+          <input
+            className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-neutral-500"
+            placeholder="Type a message…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && send()}
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+          <button
+            onClick={send}
+            className="px-4 py-2 rounded-xl bg-blue-600 text-white disabled:opacity-50"
+            disabled={loading || !input.trim()}
+          >
+            Send
+          </button>
+          <button
+            onClick={stop}
+            className="px-4 py-2 rounded-xl border border-neutral-700 text-neutral-200 disabled:opacity-50"
+            disabled={!loading}
+          >
+            Stop
+          </button>
+        </div>
+      </div>
+    </main>
   );
 }
